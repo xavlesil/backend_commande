@@ -26,6 +26,33 @@ class AppelOffreController extends Controller
     }
 
     /**
+     * Calcule la distance entre deux points géographiques en kilomètres (formule de Haversine).
+     *
+     * @param float $latitudeFrom
+     * @param float $longitudeFrom
+     * @param float $latitudeTo
+     * @param float $longitudeTo
+     * @return float
+     */
+    protected function haversineGreatCircleDistance($latitudeFrom, $longitudeFrom, $latitudeTo, $longitudeTo)
+    {
+        $earthRadius = 6371; // Rayon de la Terre en kilomètres
+
+        // Convertir les degrés en radians
+        $latFrom = deg2rad($latitudeFrom);
+        $lonFrom = deg2rad($longitudeFrom);
+        $latTo = deg2rad($latitudeTo);
+        $lonTo = deg2rad($longitudeTo);
+
+        $latDelta = $latTo - $latFrom;
+        $lonDelta = $lonTo - $lonFrom;
+
+        $angle = 2 * asin(sqrt(pow(sin($latDelta / 2), 2) +
+            cos($latFrom) * cos($latTo) * pow(sin($lonDelta / 2), 2)));
+        return $earthRadius * $angle;
+    }
+
+    /**
      * Store a newly created resource in storage.
      */
     public function store(Request $request)
@@ -110,61 +137,54 @@ class AppelOffreController extends Controller
     /**
      * Suggère des prestataires pour un appel d'offres en fonction des compétences requises.
      */
-    public function suggestPrestataires(AppelOffre $appelOffre)
-    {
-        // 1. Récupérer les IDs des compétences requises
-        $competenceIds = $appelOffre->competences()->pluck('id');
+   public function suggestPrestataires(AppelOffre $appelOffre)
+{
+    // 1. Récupérer les IDs des compétences requises
+    $competenceIds = $appelOffre->competences()->pluck('id');
 
-        if ($competenceIds->isEmpty()) {
-            return response()->json([]);
+    if ($competenceIds->isEmpty()) {
+        return response()->json([]);
+    }
+
+    // 2. Trouver les prestataires qui possèdent au moins une de ces compétences
+    $prestataires = Prestataire::whereHas('competences', function ($query) use ($competenceIds) {
+        $query->whereIn('competences.id', $competenceIds);
+    })
+    ->with('competences')
+    ->get();
+    
+    // 3. Calculer la distance et le score de pertinence
+    $camegLat = 6.1782; // Coordonnées du siège CAMEG
+    $camegLon = 1.2147;
+
+    $prestataires = $prestataires->map(function ($prestataire) use ($camegLat, $camegLon, $competenceIds) {
+        // Calculer la distance
+        if ($prestataire->latitude && $prestataire->longitude) {
+            $prestataire->distance_km = $this->haversineGreatCircleDistance($camegLat, $camegLon, $prestataire->latitude, $prestataire->longitude);
+        } else {
+            $prestataire->distance_km = 999; // Distance élevée si pas de coordonnées
         }
 
-        // 2. Trouver les prestataires qui possèdent au moins une de ces compétences
-        $prestataires = Prestataire::whereHas('competences', function ($query) use ($competenceIds) {
-            $query->whereIn('competences.id', $competenceIds);
-        })
-        ->with('competences')
-        ->get();
-        
-        // 3. Calculer la distance de chaque prestataire par rapport au siège
-        $camegLat = 6.1782; // Coordonnées du siège CAMEG
-        $camegLon = 1.2147;
+        // Calculer le score de pertinence (nombre de compétences correspondantes)
+        $prestataireCompetenceIds = $prestataire->competences->pluck('id');
+        $competencesCorrespondantes = $competenceIds->intersect($prestataireCompetenceIds);
+        $prestataire->score_pertinence = $competencesCorrespondantes->count();
+        $prestataire->pourcentage_competences = ($competencesCorrespondantes->count() / $competenceIds->count()) * 100;
 
-        $prestataires->map(function ($prestataire) use ($camegLat, $camegLon) {
-            if ($prestataire->latitude && $prestataire->longitude) {
-                $prestataire->distance = $this->haversineGreatCircleDistance($camegLat, $camegLon, $prestataire->latitude, $prestataire->longitude);
-            } else {
-                $prestataire->distance = null;
-            }
-            // TODO: Remplacer par un vrai calcul de moyenne des évaluations
-            $prestataire->note_moyenne = rand(25, 50) / 10; // Note aléatoire entre 2.5 et 5 pour la démo
-            return $prestataire;
-        });
+        // TODO: Remplacer par un vrai calcul de moyenne des évaluations
+        $prestataire->note_moyenne = rand(25, 50) / 10; // Note aléatoire entre 2.5 et 5 pour la démo
 
-        // 4. Trier les prestataires par distance croissante
-        $sortedPrestataires = $prestataires->sortBy('distance');
+        return $prestataire;
+    });
 
-        return response()->json($sortedPrestataires->values()->all());
-    }
+    // 4. Trier les prestataires par score de pertinence décroissant, puis par distance croissante
+    $sortedPrestataires = $prestataires->sortBy([
+        ['score_pertinence', 'desc'],
+        ['distance_km', 'asc']
+    ]);
 
-    /**
-     * Calcule la distance du Grand Cercle de Haversine entre deux points.
-     */
-    private function haversineGreatCircleDistance($latitudeFrom, $longitudeFrom, $latitudeTo, $longitudeTo, $earthRadius = 6371)
-    {
-      $latFrom = deg2rad($latitudeFrom);
-      $lonFrom = deg2rad($longitudeFrom);
-      $latTo = deg2rad($latitudeTo);
-      $lonTo = deg2rad($longitudeTo);
-
-      $latDelta = $latTo - $latFrom;
-      $lonDelta = $lonTo - $lonFrom;
-
-      $angle = 2 * asin(sqrt(pow(sin($latDelta / 2), 2) +
-        cos($latFrom) * cos($latTo) * pow(sin($lonDelta / 2), 2)));
-      return $angle * $earthRadius;
-    }
-
+    return response()->json($sortedPrestataires->values()->all());
+}
     /**
      * Invite des prestataires à un appel d'offres.
      *
@@ -172,36 +192,36 @@ class AppelOffreController extends Controller
      * @param AppelOffre $appelOffre
      * @return \Illuminate\Http\JsonResponse
      */
-    public function inviter(Request $request, AppelOffre $appelOffre)
-    {
-        $validatedData = $request->validate([
-            'prestataires' => 'required|array',
-            'prestataires.*' => 'exists:prestataires,id',
+   public function inviter(Request $request, AppelOffre $appelOffre)
+{
+    $validatedData = $request->validate([
+        'prestataire_ids' => 'required|array', // Changé de 'prestataires' à 'prestataire_ids'
+        'prestataire_ids.*' => 'exists:prestataires,id',
+    ]);
+
+    try {
+        DB::transaction(function () use ($appelOffre, $validatedData) {
+            // Attacher les prestataires à l'appel d'offres
+            $appelOffre->prestataires()->syncWithoutDetaching($validatedData['prestataire_ids']);
+
+            // Mettre à jour le statut de l'appel d'offres
+            $appelOffre->update(['statut' => 'EN_COURS']);
+        });
+
+        return response()->json([
+            'message' => 'Prestataires invités avec succès et appel d\'offres mis à jour.'
+        ], 200);
+
+    } catch (\Exception $e) {
+        Log::error('Erreur lors de l\'invitation des prestataires:', [
+            'message' => $e->getMessage(),
+            'appel_offre_id' => $appelOffre->id,
         ]);
 
-        try {
-            DB::transaction(function () use ($appelOffre, $validatedData) {
-                // Attacher les prestataires à l'appel d'offres
-                $appelOffre->prestataires()->syncWithoutDetaching($validatedData['prestataires']);
-
-                // Mettre à jour le statut de l'appel d'offres
-                $appelOffre->update(['statut' => 'EN_COURS']);
-            });
-
-            return response()->json([
-                'message' => 'Prestataires invités avec succès et appel d\'offres mis à jour.'
-            ], 200);
-
-        } catch (\Exception $e) {
-            Log::error('Erreur lors de l\'invitation des prestataires:', [
-                'message' => $e->getMessage(),
-                'appel_offre_id' => $appelOffre->id,
-            ]);
-
-            return response()->json([
-                'message' => 'Une erreur est survenue lors de l\'invitation des prestataires.',
-                'error' => $e->getMessage()
-            ], 500);
-        }
+        return response()->json([
+            'message' => 'Une erreur est survenue lors de l\'invitation des prestataires.',
+            'error' => $e->getMessage()
+        ], 500);
     }
+}
 }

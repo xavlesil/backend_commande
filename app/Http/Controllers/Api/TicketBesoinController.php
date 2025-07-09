@@ -85,4 +85,8 @@ class TicketBesoinController extends Controller
             'ticket' => $ticket
         ], 201);
     }
+    public function show(TicketBesoin $ticketBesoin)
+    {
+        return $ticketBesoin->load(['categorie', 'createur.profil']);
+    }
 }
