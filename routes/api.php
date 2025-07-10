@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\AppelOffreController;
 use App\Http\Controllers\Api\CompetenceController;
 use App\Http\Controllers\Api\PrestataireController;
+use App\Http\Controllers\Api\DashboardPrestataireController;
 
 Route::post('/login', [AuthController::class, 'login']);
 
@@ -33,12 +34,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/appel-offres', [AppelOffreController::class, 'store']);
     Route::get('/appel-offres/{appelOffre}/suggest-prestataires', [AppelOffreController::class, 'suggestPrestataires']);
     Route::post('/appel-offres/{appelOffre}/inviter', [AppelOffreController::class, 'inviter']);
+    Route::delete('/appel-offres/{appelOffre}', [AppelOffreController::class, 'destroy']);
+    Route::put('/appel-offres/{appelOffre}', [AppelOffreController::class, 'update']);
 
     // Routes pour les compétences
     Route::get('/competences', [CompetenceController::class, 'index']);
 
     // Routes pour les prestataires (CRUD)
     Route::apiResource('prestataires', PrestataireController::class);
+    Route::middleware('auth:sanctum')->get('/dashboard-prestataire', [DashboardPrestataireController::class, 'index']);
+    
+
 
     // Routes pour les catégories de ticket
     Route::get('/ticket-categories', [TicketCategorieController::class, 'index']);

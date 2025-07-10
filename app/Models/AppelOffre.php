@@ -61,4 +61,9 @@ class AppelOffre extends Model
     {
         return $this->hasMany(Devis::class, 'id_appel_offre');
     }
+    public function soumissions()
+{
+    return $this->hasMany(Soumission::class);
+}
+
 } 

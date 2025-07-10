@@ -58,7 +58,7 @@ class AppelOffreController extends Controller
     public function store(Request $request)
     {
         Log::info('Début de la création d\'un appel d\'offres.');
-        
+
         $validatedData = $request->validate([
             'titre' => 'required|string|max:255',
             'description' => 'required|string',
@@ -92,10 +92,10 @@ class AppelOffreController extends Controller
                     $appelOffre->tickets()->attach($validatedData['ticket_ids']);
 
                     TicketBesoin::whereIn('id', $validatedData['ticket_ids'])
-                                ->update(['statut' => 'EN_APPEL_OFFRE']);
+                        ->update(['statut' => 'EN_APPEL_OFFRE']);
                     Log::info('Statut des tickets mis à jour.');
                 }
-                
+
                 // 3. Associer les compétences
                 if (!empty($validatedData['competence_ids'])) {
                     Log::info('Association des compétences...', ['ids' => $validatedData['competence_ids']]);
@@ -131,60 +131,87 @@ class AppelOffreController extends Controller
      */
     public function show(AppelOffre $appelOffre)
     {
-        return $appelOffre->load(['tickets', 'competences']);
+        $appelOffre->load([
+            'tickets',
+            'competences',
+            'prestataires',
+            'soumissions.prestataire'
+        ]);
+
+        $camegLat = 6.1782;
+        $camegLon = 1.2147;
+
+        $appelOffre->prestataires->map(function ($prestataire) use ($camegLat, $camegLon) {
+            if ($prestataire->latitude && $prestataire->longitude) {
+                $prestataire->distance = $this->haversineGreatCircleDistance(
+                    $camegLat,
+                    $camegLon,
+                    $prestataire->latitude,
+                    $prestataire->longitude
+                );
+            } else {
+                $prestataire->distance = null;
+            }
+
+            $prestataire->note_moyenne = rand(25, 50) / 10; // démo
+            return $prestataire;
+        });
+
+        return $appelOffre;
     }
+
 
     /**
      * Suggère des prestataires pour un appel d'offres en fonction des compétences requises.
      */
-   public function suggestPrestataires(AppelOffre $appelOffre)
-{
-    // 1. Récupérer les IDs des compétences requises
-    $competenceIds = $appelOffre->competences()->pluck('id');
+    public function suggestPrestataires(AppelOffre $appelOffre)
+    {
+        // 1. Récupérer les IDs des compétences requises
+        $competenceIds = $appelOffre->competences()->pluck('id');
 
-    if ($competenceIds->isEmpty()) {
-        return response()->json([]);
-    }
-
-    // 2. Trouver les prestataires qui possèdent au moins une de ces compétences
-    $prestataires = Prestataire::whereHas('competences', function ($query) use ($competenceIds) {
-        $query->whereIn('competences.id', $competenceIds);
-    })
-    ->with('competences')
-    ->get();
-    
-    // 3. Calculer la distance et le score de pertinence
-    $camegLat = 6.1782; // Coordonnées du siège CAMEG
-    $camegLon = 1.2147;
-
-    $prestataires = $prestataires->map(function ($prestataire) use ($camegLat, $camegLon, $competenceIds) {
-        // Calculer la distance
-        if ($prestataire->latitude && $prestataire->longitude) {
-            $prestataire->distance_km = $this->haversineGreatCircleDistance($camegLat, $camegLon, $prestataire->latitude, $prestataire->longitude);
-        } else {
-            $prestataire->distance_km = 999; // Distance élevée si pas de coordonnées
+        if ($competenceIds->isEmpty()) {
+            return response()->json([]);
         }
 
-        // Calculer le score de pertinence (nombre de compétences correspondantes)
-        $prestataireCompetenceIds = $prestataire->competences->pluck('id');
-        $competencesCorrespondantes = $competenceIds->intersect($prestataireCompetenceIds);
-        $prestataire->score_pertinence = $competencesCorrespondantes->count();
-        $prestataire->pourcentage_competences = ($competencesCorrespondantes->count() / $competenceIds->count()) * 100;
+        // 2. Trouver les prestataires qui possèdent au moins une de ces compétences
+        $prestataires = Prestataire::whereHas('competences', function ($query) use ($competenceIds) {
+            $query->whereIn('competences.id', $competenceIds);
+        })
+            ->with('competences')
+            ->get();
 
-        // TODO: Remplacer par un vrai calcul de moyenne des évaluations
-        $prestataire->note_moyenne = rand(25, 50) / 10; // Note aléatoire entre 2.5 et 5 pour la démo
+        // 3. Calculer la distance et le score de pertinence
+        $camegLat = 6.1782; // Coordonnées du siège CAMEG
+        $camegLon = 1.2147;
 
-        return $prestataire;
-    });
+        $prestataires = $prestataires->map(function ($prestataire) use ($camegLat, $camegLon, $competenceIds) {
+            // Calculer la distance
+            if ($prestataire->latitude && $prestataire->longitude) {
+                $prestataire->distance_km = $this->haversineGreatCircleDistance($camegLat, $camegLon, $prestataire->latitude, $prestataire->longitude);
+            } else {
+                $prestataire->distance_km = 999; // Distance élevée si pas de coordonnées
+            }
 
-    // 4. Trier les prestataires par score de pertinence décroissant, puis par distance croissante
-    $sortedPrestataires = $prestataires->sortBy([
-        ['score_pertinence', 'desc'],
-        ['distance_km', 'asc']
-    ]);
+            // Calculer le score de pertinence (nombre de compétences correspondantes)
+            $prestataireCompetenceIds = $prestataire->competences->pluck('id');
+            $competencesCorrespondantes = $competenceIds->intersect($prestataireCompetenceIds);
+            $prestataire->score_pertinence = $competencesCorrespondantes->count();
+            $prestataire->pourcentage_competences = ($competencesCorrespondantes->count() / $competenceIds->count()) * 100;
 
-    return response()->json($sortedPrestataires->values()->all());
-}
+            // TODO: Remplacer par un vrai calcul de moyenne des évaluations
+            $prestataire->note_moyenne = rand(25, 50) / 10; // Note aléatoire entre 2.5 et 5 pour la démo
+
+            return $prestataire;
+        });
+
+        // 4. Trier les prestataires par score de pertinence décroissant, puis par distance croissante
+        $sortedPrestataires = $prestataires->sortBy([
+            ['score_pertinence', 'desc'],
+            ['distance_km', 'asc']
+        ]);
+
+        return response()->json($sortedPrestataires->values()->all());
+    }
     /**
      * Invite des prestataires à un appel d'offres.
      *
@@ -192,36 +219,62 @@ class AppelOffreController extends Controller
      * @param AppelOffre $appelOffre
      * @return \Illuminate\Http\JsonResponse
      */
-   public function inviter(Request $request, AppelOffre $appelOffre)
-{
-    $validatedData = $request->validate([
-        'prestataire_ids' => 'required|array', // Changé de 'prestataires' à 'prestataire_ids'
-        'prestataire_ids.*' => 'exists:prestataires,id',
-    ]);
-
-    try {
-        DB::transaction(function () use ($appelOffre, $validatedData) {
-            // Attacher les prestataires à l'appel d'offres
-            $appelOffre->prestataires()->syncWithoutDetaching($validatedData['prestataire_ids']);
-
-            // Mettre à jour le statut de l'appel d'offres
-            $appelOffre->update(['statut' => 'EN_COURS']);
-        });
-
-        return response()->json([
-            'message' => 'Prestataires invités avec succès et appel d\'offres mis à jour.'
-        ], 200);
-
-    } catch (\Exception $e) {
-        Log::error('Erreur lors de l\'invitation des prestataires:', [
-            'message' => $e->getMessage(),
-            'appel_offre_id' => $appelOffre->id,
+    public function inviter(Request $request, AppelOffre $appelOffre)
+    {
+        $validatedData = $request->validate([
+            'prestataire_ids' => 'required|array', // Changé de 'prestataires' à 'prestataire_ids'
+            'prestataire_ids.*' => 'exists:prestataires,id',
         ]);
 
-        return response()->json([
-            'message' => 'Une erreur est survenue lors de l\'invitation des prestataires.',
-            'error' => $e->getMessage()
-        ], 500);
+        try {
+            DB::transaction(function () use ($appelOffre, $validatedData) {
+                // Attacher les prestataires à l'appel d'offres
+                $appelOffre->prestataires()->syncWithoutDetaching($validatedData['prestataire_ids']);
+
+                // Mettre à jour le statut de l'appel d'offres
+                $appelOffre->update(['statut' => 'EN_COURS']);
+            });
+
+            return response()->json([
+                'message' => 'Prestataires invités avec succès et appel d\'offres mis à jour.'
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('Erreur lors de l\'invitation des prestataires:', [
+                'message' => $e->getMessage(),
+                'appel_offre_id' => $appelOffre->id,
+            ]);
+
+            return response()->json([
+                'message' => 'Une erreur est survenue lors de l\'invitation des prestataires.',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+    public function destroy(AppelOffre $appelOffre)
+{
+    try {
+        $appelOffre->delete();
+        return response()->json(['message' => 'Appel d\'offres supprimé.']);
+    } catch (\Exception $e) {
+        Log::error("Erreur suppression appel : " . $e->getMessage());
+        return response()->json(['message' => 'Erreur serveur'], 500);
     }
 }
+    public function update(Request $request, AppelOffre $appelOffre)
+    {
+        $validatedData = $request->validate([
+            'titre' => 'required|string|max:255',
+            'description' => 'required|string',
+            'date_cloture' => 'required|date|after_or_equal:today',
+        ]);
+
+        try {
+            $appelOffre->update($validatedData);
+            return response()->json(['message' => 'Appel d\'offres mis à jour avec succès.']);
+        } catch (\Exception $e) {
+            Log::error("Erreur mise à jour appel : " . $e->getMessage());
+            return response()->json(['message' => 'Erreur serveur'], 500);
+        }
+    }
 }
